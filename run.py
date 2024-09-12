@@ -26,13 +26,15 @@ def custom_date_parser(date_str) -> pd.DatetimeIndex:
 
 # Define the Encoder
 class EncoderLSTM(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layers):
+    def __init__(self, input_dim, hidden_dim, num_layers, dropout=0.2):
         super(EncoderLSTM, self).__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         
         # Define LSTM
         self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
+
+        self.dropout = nn.Dropout(dropout)
     
     def forward(self, x):
         # Initialize hidden and cell state
@@ -41,19 +43,23 @@ class EncoderLSTM(nn.Module):
         
         # Pass input through LSTM
         output, (hn, cn) = self.lstm(x, (h0, c0))
+
+        output = self.dropout(output)
         
         # hn and cn will be passed to the decoder
         return output, hn, cn
 
 
 class DecoderLSTM(nn.Module):
-    def __init__(self, output_dim, hidden_dim, num_layers):
+    def __init__(self, output_dim, hidden_dim, num_layers, dropout=0.2):
         super(DecoderLSTM, self).__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
         
         # LSTM layer
         self.lstm = nn.LSTM(output_dim, hidden_dim, num_layers, batch_first=True)
+
+        self.dropout = nn.Dropout(dropout)
         
         # Fully connected layer to output real values
         self.fc = nn.Linear(hidden_dim, output_dim)
@@ -61,6 +67,8 @@ class DecoderLSTM(nn.Module):
     def forward(self, x, hidden, cell):
         # Pass input through the LSTM
         output, (hn, cn) = self.lstm(x, (hidden, cell))
+
+        output = self.dropout(output)
         
         # Pass through the fully connected layer to get real-valued predictions
         output = self.fc(output)
@@ -343,12 +351,12 @@ class TorchForecaster(Forecaster):
                 "train_loss": train_loss,
                 "val_loss": val_loss
             }]
+            pd.DataFrame(self.training_process).to_csv(f"training_process_{self.year}_{self.ig}.csv", index=False)
 
             assert best_model_state_dict is not None
             self.model.load_state_dict(best_model_state_dict)
 
         self.total_epochs += epochs
-        pd.DataFrame(self.training_process).to_csv(f"training_process_{self.year}_{self.ig}.csv", index=False)
         self.is_trained = True
             
     def predict(self, time_index: pd.Index) -> np.ndarray:
@@ -395,8 +403,8 @@ def train_and_evaluate(year: int):
     hidden_dim = 64 
     num_layers = 2  
     learning_rate = 0.001
-    epochs = 2
-    finetune_epochs = 2
+    epochs =  25
+    finetune_epochs = 15
     alpha = 2.
     finetune_frequency = 115 // finetune_epochs
 
@@ -492,15 +500,12 @@ def train_and_evaluate(year: int):
         pickle.dump(rmse_peak_results, f)
 
 
-
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--year", type=int, required=True)
     args = parser.parse_args()
 
     train_and_evaluate(args.year)
-    plot(args.year)
+
 
 
