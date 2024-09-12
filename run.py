@@ -12,9 +12,9 @@ import json
 import pickle
 import numpy as np
 import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
 import os
+import argparse
+import time
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
@@ -223,6 +223,9 @@ class TorchForecaster(Forecaster):
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        self.n_updates = 0
+        self.total_epochs = 0
+
     def augment(self, train_data: pd.DataFrame) -> pd.DataFrame:
         """Augment the training data with additional features."""
 
@@ -287,7 +290,7 @@ class TorchForecaster(Forecaster):
         best_model_state_dict = None
         best_loss = np.inf
 
-        for epoch in range(epochs):
+        for epoch in range(self.total_epochs, self.total_epochs + epochs):
             self.model.train()
             train_loss = []
             for i, (x_window, y_window) in enumerate(train_loader):
@@ -344,6 +347,7 @@ class TorchForecaster(Forecaster):
             assert best_model_state_dict is not None
             self.model.load_state_dict(best_model_state_dict)
 
+        self.total_epochs += epochs
         pd.DataFrame(self.training_process).to_csv(f"training_process_{self.year}_{self.ig}.csv", index=False)
         self.is_trained = True
             
@@ -367,6 +371,9 @@ class TorchForecaster(Forecaster):
         y_pred_window = y_pred_window.squeeze()
 
         y_pred_window = y_pred_window.detach().cpu().numpy()
+
+        y_pred_window = y_pred_window * self.std + self.mean
+        y_pred_window = np.clip(y_pred_window, 0, None)
         
         return y_pred_window
 
@@ -380,41 +387,7 @@ class TorchForecaster(Forecaster):
         self.dataset = self.dataset.drop_duplicates(subset=["Time stamp"], keep="first")
         self.dataset = self.augment(self.dataset)
 
-
-def plot(year: int):
-    with open(f"results_{year}.pkl", "wb") as f:
-        rmse= pickle.load(f)
-
-    with open(f"results_peak_{year}.pkl", "wb") as f:
-         peak_rmse = pickle.load(f)
-
-    # Create a DataFrame from the dictionaries
-    df = pd.DataFrame({
-        'Load': list(rmse.keys()), 
-        'RMSE': list(rmse.values()), 
-        'RMSE (Peaks)': list(peak_rmse.values())
-    })
-
-    # Melt the DataFrame to long format for Seaborn
-    df_melted = df.melt(id_vars='Load', value_vars=['RMSE', 'RMSE (Peaks)'], var_name='Metric', value_name='Value')
-
-    # Set the Seaborn style
-    sns.set(style="whitegrid")
-
-    # Create the bar plot
-    plt.figure(figsize=(10, 6))
-    sns.barplot(x='Load', y='Value', hue='Metric', data=df_melted, palette='muted')
-
-    # Add labels and title
-    plt.title('Comparison of Metrics Across LGs', fontsize=14)
-    plt.xlabel('LG', fontsize=12)
-    plt.ylabel('Metric Value', fontsize=12)
-
-    # Display the plot
-    plt.tight_layout()
-    plt.savefig(f"results_{year}.png", dpi=500)
-    
-    
+        self.n_updates += 1
 
 def train_and_evaluate(year: int):
     input_dim = 5
@@ -423,7 +396,9 @@ def train_and_evaluate(year: int):
     num_layers = 2  
     learning_rate = 0.001
     epochs = 2
+    finetune_epochs = 2
     alpha = 2.
+    finetune_frequency = 115 // finetune_epochs
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -433,6 +408,7 @@ def train_and_evaluate(year: int):
         load_profiles = pd.read_csv('LoadProfile_30IPs_2017.csv', skiprows=1, delimiter=";", index_col=0, date_parser=custom_date_parser)
     
     load_profiles = load_profiles[~load_profiles.index.duplicated(keep='first')]
+    load_profiles = load_profiles.interpolate()
     
     actuals = pd.read_csv(f'tobi/{year}_actuals.csv', index_col=0, parse_dates=True)
     peak_actuals = pd.read_csv(f'tobi/{year}_peak_actuals.csv', index_col=0, parse_dates=True)
@@ -442,6 +418,7 @@ def train_and_evaluate(year: int):
 
     # for dataset_id in actuals['dataset_id'].unique():
     for load in [x for x in actuals.columns if x != 'dataset_id']:
+        start = time.time()
         actuals_load = actuals[[load, 'dataset_id']]
 
         encoder = EncoderLSTM(input_dim, hidden_dim, num_layers).to(device)
@@ -463,16 +440,18 @@ def train_and_evaluate(year: int):
 
         def the_fancy_forecaster(time_index_to_forecast, train_data):
             forecaster.update(train_data)
+
             if not forecaster.is_trained:
                 print(f"Training year {year} for load {load}...")
                 forecaster.train(epochs=epochs)
                 print("Done.")
-            else:
-                pass
-                #forecaster.preprocess()
-                #forecaster.train(epochs=1)
+            elif forecaster.n_updates % finetune_frequency == 0:
+                print(f"Fine-tuning year {year} for load {load}...")
+                forecaster.train(epochs=1)
+                print("Done.")
 
-            return forecaster.predict(time_index_to_forecast)
+            prediction = forecaster.predict(time_index_to_forecast)
+            return prediction
 
         for dataset_id in actuals_load['dataset_id'].unique():
             actuals_i = actuals_load[actuals_load['dataset_id'] == dataset_id]
@@ -482,8 +461,8 @@ def train_and_evaluate(year: int):
             forecast = the_fancy_forecaster(actuals_i_j.index, train_data_i_j)
             forecasts.loc[actuals_i_j.index, load] = forecast
 
-        break
-
+        runtime = time.time() - start
+        print(f"Minutes taken: {runtime / 60}")
 
     def calculate_rmse(actual, predicted):
         return np.sqrt(((actual - predicted) ** 2).mean())
@@ -497,11 +476,13 @@ def train_and_evaluate(year: int):
         actual = actuals[col]
         peak_actual = peak_actuals[col]
         rmse_results[col] = calculate_rmse(actual, forecast)
-        rmse_peak_results[col] = calculate_rmse(peak_actual, forecast[peak_actual != 0])
+        rmse_peak_results[col] = calculate_rmse(peak_actual[peak_actual != 0], forecast[peak_actual != 0])
 
     # Output RMSE for each column pair
     print(rmse_results)
     print(rmse_peak_results)
+
+    forecasts.to_csv(f"forecasts_{year}.csv")
 
     # save results as pickle files
     with open(f"results_{year}.pkl", "wb") as f:
@@ -512,9 +493,14 @@ def train_and_evaluate(year: int):
 
 
 
-if __name__ == "__main__":
-    # train_and_evaluate(2016)
-    plot(2016)
 
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--year", type=int, required=True)
+    args = parser.parse_args()
+
+    train_and_evaluate(args.year)
+    plot(args.year)
 
 
