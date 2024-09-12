@@ -1,3 +1,4 @@
 jupyter
 autogluon
 pandas
+nni==2.9
