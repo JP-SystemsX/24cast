@@ -1,0 +1,4 @@
+Module for Miniconda3, version 4.10.3 loaded
+Module for CUDA, version 12.4.0 loaded
+/bigwork/nhwpbecj/git_projects/24cast/run.py:414: FutureWarning: The argument 'date_parser' is deprecated and will be removed in a future version. Please use 'date_format' instead, or read your data in as 'object' dtype and then call 'to_datetime'.
+  load_profiles = pd.read_csv('LoadProfile_20IPs_2016.csv', skiprows=1, delimiter=";", index_col=0, date_parser=custom_date_parser)

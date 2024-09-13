@@ -1,0 +1,22 @@
+{
+  "kernel_type": {
+                "_type":  "choice",
+                "_value": ["exponential", "uniform"]
+            },
+  "exp_kernel_weights": {
+                "_type":  "uniform",
+                "_value": [0.1, 3]
+            },
+  "use_seasonal_model": {
+                "_type":  "choice",
+                "_value": [true, false]
+            },
+  "num_samples": {
+                "_type": "randint",
+                "_value": [1, 300]
+  },
+  "num_default_time_features": {
+                "_type": "randint",
+                "_value": [1, 10]
+  }
+}

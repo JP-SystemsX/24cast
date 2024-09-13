@@ -1,3 +1,6 @@
 
 /.idea
 /autogluon-m4-hourly
+/AutogluonModels
+*.pkl
+/NNIBasedOptimisation/AutogluonModels

@@ -1,0 +1,14 @@
+trialConcurrency: 20
+searchSpaceFile: search_space.json
+trialCodeDirectory: .
+trialCommand: python trial.py
+maxTrialNumber: 10 #200 during deploy
+
+
+tuner:
+  name: TPE
+  classArgs:
+      optimize_mode: minimize
+
+trainingService:
+  platform: local
