@@ -5,26 +5,30 @@ import os
 import argparse
 import pickle
 import json
+import numpy as np
+
 
 sns.set(style="whitegrid")
 sns.set_palette("colorblind")
 
 
-def plot(year: int):
-    # with open(f"results_{year}.pkl", "rb") as f:
-    #     rmse = pickle.load(f)
+def custom_date_parser(date_str) -> pd.DatetimeIndex:
+    cleaned_date_str = date_str.replace(" b", "").strip()
+    return pd.to_datetime(cleaned_date_str, format='%d.%m.%Y %H:%M:%S')
 
-    # with open(f"results_peak_{year}.pkl", "rb") as f:
-    #     peak_rmse = pickle.load(f)
+
+def plot(year: int):
+    with open(f"results_{year}.pkl", "rb") as f:
+        rmse = pickle.load(f)
+
+    with open(f"results_peak_{year}.pkl", "rb") as f:
+        peak_rmse = pickle.load(f)
 
     with open(f"results_{year}_autogluon.json", "rb") as f:
         rmse_autogluon = json.load(f)
 
     with open(f"results_peak_{year}_autogluon.json", "rb") as f:
         peak_rmse_autogluon = json.load(f)
-
-    rmse = rmse_autogluon
-    peak_rmse = peak_rmse_autogluon
 
     # Create a DataFrame from the dictionaries
     df = pd.DataFrame({
@@ -42,7 +46,19 @@ def plot(year: int):
         "AutoGluon: RMSE (Peaks)": list(peak_rmse_autogluon.values())
     })
 
-    df["Load"] = df["Load"].str.replace("LG ", "")
+    if year == 2016:
+        load_profiles = pd.read_csv('LoadProfile_20IPs_2016.csv', skiprows=1, delimiter=";", index_col=0, date_parser=custom_date_parser)
+    else:
+        load_profiles = pd.read_csv('LoadProfile_30IPs_2017.csv', skiprows=1, delimiter=";", index_col=0, date_parser=custom_date_parser)
+
+    means = load_profiles.mean()
+
+    df['LSTM: RMSE'] = df['LSTM: RMSE'] / means[df['Load']].values
+    df['AutoGluon: RMSE'] = df['AutoGluon: RMSE'] / means[df['Load']].values
+    df['LSTM: RMSE (Peaks)'] = df['LSTM: RMSE (Peaks)'] / means[df['Load']].values
+    df['AutoGluon: RMSE (Peaks)'] = df['AutoGluon: RMSE (Peaks)'] / means[df['Load']].values
+
+    df["Load"] = df["Load"].str.replace("LG ", "").astype(int)
 
     # Melt the DataFrame to long format for Seaborn
     df_melted = df.melt(id_vars="Load", 
@@ -54,9 +70,9 @@ def plot(year: int):
 
     custom_palette = {
         "LSTM: RMSE": "steelblue",
-        "AutoGluon: RMSE": "lightblue",
-        "LSTM: RMSE (Peaks)": "seagreen",
-        "AutoGluon: RMSE (Peaks)": "lightgreen"
+        "AutoGluon: RMSE": "darkorange",
+        "LSTM: RMSE (Peaks)": "lightblue",
+        "AutoGluon: RMSE (Peaks)": "orange",
     }
 
     # Use Seaborn to create a grouped barplot
@@ -88,6 +104,12 @@ def plot(year: int):
 
     # Show the plot (optional, you can remove this in production)
     plt.show()
+
+    # print average RSME and peak RSME for both models
+    print("LSTM RMSE:", round(df["LSTM: RMSE"].mean(), 3))
+    print("AutoGluon RMSE:", round(df["AutoGluon: RMSE"].mean(), 3))
+    print("LSTM Peak RMSE:", round(df["LSTM: RMSE (Peaks)"].mean(), 3))
+    print("AutoGluon Peak RMSE:", round(df["AutoGluon: RMSE (Peaks)"].mean(), 3))
 
 
 def plot_learning_curve(
@@ -127,7 +149,7 @@ def plot_learning_curve(
         plt.axvspan(0, train_epochs, color="gray", alpha=0.15, label=f"Training Period")
 
     # Add labels and title
-    plt.title("LSTM: Training and Validation Loss Over Epochs", fontsize=14)
+    plt.title(f"LSTM: Training and Validation Loss Over Epochs for LG {lg} in {year}", fontsize=14)
     plt.xlabel("Epoch", fontsize=12)
     plt.ylabel("Loss", fontsize=12)
 
@@ -159,6 +181,87 @@ def plot_all_learning_curves(
             )
 
 
+def calculate_rmse(actual, predicted):
+    return np.sqrt(((actual - predicted) ** 2).mean())
+    
+
+def plot_forecast(year: int):
+    if year == 2016:
+        load_profiles = pd.read_csv('LoadProfile_20IPs_2016.csv', skiprows=1, delimiter=";", index_col=0, date_parser=custom_date_parser)
+    else:
+        load_profiles = pd.read_csv('LoadProfile_30IPs_2017.csv', skiprows=1, delimiter=";", index_col=0, date_parser=custom_date_parser)
+
+    actuals = pd.read_csv(f'tobi/{year}_actuals.csv', index_col=0, parse_dates=True)
+    peak_actuals = pd.read_csv(f'tobi/{year}_peak_actuals.csv', index_col=0, parse_dates=True)
+    forecasts =  pd.read_csv(f'forecasts_{year}.csv', index_col=0, parse_dates=True)
+
+
+    best_forecast = None
+    best_actuals = None
+    best_peak_treshold = None
+
+    best_rmse = np.inf
+
+    for load in [x for x in peak_actuals.columns if x != 'dataset_id']:
+        peak_actuals_load = peak_actuals[[load, 'dataset_id']]
+        actuals_load = actuals[[load, 'dataset_id']]
+
+        for dataset_id in peak_actuals_load['dataset_id'].unique():
+            peak_actuals_i = peak_actuals_load[peak_actuals_load['dataset_id'] == dataset_id]
+            actuals_i = actuals_load[actuals_load['dataset_id'] == dataset_id]
+            peak_actuals_i_j = peak_actuals_i[load]
+            actuals_i_j = actuals_i[load]
+
+            # get 85% of the peak load for the current load in the first 8 months
+            load_profiles_load = load_profiles[load]
+            max_load = load_profiles_load.max()
+            max_load_threshold = max_load * 0.85
+            
+            forecast = forecasts.loc[peak_actuals_i_j.index, load]
+            rmse = calculate_rmse(peak_actuals_i_j[peak_actuals_i_j != 0], forecast[peak_actuals_i_j != 0])
+            if len(peak_actuals_i_j[peak_actuals_i_j != 0]) > 4 and rmse < best_rmse:
+                best_rmse = rmse
+                best_forecast = forecast
+                best_actuals = actuals_i_j
+                best_peak_treshold = max_load_threshold
+
+    # Convert the series to DataFrame
+    best_forecast = best_forecast.reset_index()
+    best_forecast.columns = ['Time stamp', 'Predicted Load']
+
+    best_actuals = best_actuals.reset_index()
+    best_actuals.columns = ['Time stamp', 'Actual Load']
+
+    # Merge both DataFrames based on the Time stamp
+    df = pd.merge(best_forecast, best_actuals, on='Time stamp')
+
+    # Convert Time stamp to datetime
+    df['Time stamp'] = pd.to_datetime(df['Time stamp'])
+
+    # Extract the hour for x-axis tick labels
+    df['Hour'] = df['Time stamp'].dt.strftime('%H:%M')
+
+    # Plot using Seaborn
+    plt.figure(figsize=(8, 5))
+    sns.lineplot(x='Hour', y='Predicted Load', data=df, label='Predicted Load')
+    sns.lineplot(x='Hour', y='Actual Load', data=df, label='Actual Load')
+
+    # plot horizontal line at 85% of the peak load
+    plt.axhline(best_peak_treshold, color='red', linestyle='--', label='85% of Peak Load')
+
+    # Set x-ticks to display only every 4th value
+    ticks = df['Hour'][::4]  # Select every 4th value
+    plt.xticks(ticks)
+
+    # set y lim 
+    plt.ylim(2400, 2600)
+
+    # Display the plot with a legend
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f"plots/best_rsme_{year}.png", dpi=500)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--year", type=int, required=True)
@@ -174,3 +277,4 @@ if __name__ == "__main__":
         show_val_min=args.show_val_min
     )
     plot(args.year)
+    plot_forecast(args.year)
